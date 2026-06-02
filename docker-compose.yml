@@ -1,0 +1,17 @@
+services:
+  fly-overhead-feeder:
+    image: ghcr.io/dhightnm/fly-overhead-feeder:latest
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      FEEDER_API_URL: ${FEEDER_API_URL:-https://flyoverhead.com}
+      FEEDER_API_KEY: ${FEEDER_API_KEY}
+      FEEDER_ID: ${FEEDER_ID}
+      FEEDER_WIRE_MODE: ${FEEDER_WIRE_MODE:-auto}
+      FEEDER_JSON_SOURCE: ${FEEDER_JSON_SOURCE:-http://127.0.0.1:8080/data/aircraft.json}
+      FLY_OVERHEAD_FEEDER_UUID: ${FLY_OVERHEAD_FEEDER_UUID:-}
+    volumes:
+      - feeder-data:/var/lib/fly-overhead-feeder
+
+volumes:
+  feeder-data:
