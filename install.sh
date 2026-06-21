@@ -4,7 +4,8 @@
 # Usage:
 #   curl -fsSL https://flyoverhead.com/install.sh | sudo bash
 #
-# FEEDER_INSTALL_MODE=anonymous|pair|skip|interactive  (default: anonymous)
+# FEEDER_INSTALL_MODE=anonymous|pair|skip|interactive
+#   (default: interactive when a terminal is attached, else anonymous)
 #
 # Idempotent. Two receiver modes, chosen automatically:
 #   - Client mode: an existing decoder (PiAware / dump1090-fa / readsb / tar1090)
@@ -29,10 +30,21 @@ CONFIG_PATH="/var/lib/fly-overhead-feeder/config.json"
 # Set FEEDER_SKIP_DECODER_INSTALL=1 to never auto-install readsb (abort instead).
 SKIP_DECODER_INSTALL="${FEEDER_SKIP_DECODER_INSTALL:-0}"
 READSB_INSTALL_URL="${READSB_INSTALL_URL:-https://github.com/wiedehopf/adsb-scripts/raw/master/readsb-install.sh}"
-# anonymous (default): register and start feeding without an account.
+# interactive: prompt the user to feed anonymously or pair to their account.
+# anonymous: register and start feeding without an account.
 # pair: block until the user approves a code at /feeders/pair.
 # skip: keep existing config on re-install (fails if not yet registered).
-FEEDER_INSTALL_MODE="${FEEDER_INSTALL_MODE:-anonymous}"
+# Default to the prompt when a controlling terminal exists — `curl ... | sudo
+# bash` still exposes /dev/tty, so the choice isn't a separate manual step.
+# Headless/automated installs (no tty) fall back to anonymous so they never block.
+FEEDER_INSTALL_MODE="${FEEDER_INSTALL_MODE:-}"
+if [[ -z "$FEEDER_INSTALL_MODE" ]]; then
+  if [[ -r /dev/tty ]]; then
+    FEEDER_INSTALL_MODE="interactive"
+  else
+    FEEDER_INSTALL_MODE="anonymous"
+  fi
+fi
 # Set FEEDER_FORCE_SOURCE_BUILD=1 to skip prebuilt CDN tarballs.
 FEEDER_FORCE_SOURCE_BUILD="${FEEDER_FORCE_SOURCE_BUILD:-0}"
 FEEDER_UUID_FILE="/var/lib/fly-overhead-feeder/feeder.uuid"
@@ -125,23 +137,36 @@ install_readsb() {
 ensure_node() {
   if command -v node >/dev/null 2>&1; then
     local major
-    major=$(node --version | sed 's/^v\([0-9]*\).*/\1/')
-    if [[ "$major" -ge 20 ]]; then return; fi
+    # An arch-mismatched node (e.g. an ARMv7 build on an ARMv6 core) SIGILLs on
+    # `node --version`, printing nothing; treat that as "needs (re)install".
+    major=$(node --version 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/')
+    if [[ "${major:-0}" -ge 20 ]]; then return; fi
   fi
   step "installing Node.js 20"
-  # NodeSource dropped armhf packaging for Node 20+; install from nodejs.org
-  # tarball instead. Raspberry Pi OS 32-bit (the PiAware default on older
-  # boards) reports armhf via `dpkg --print-architecture`.
-  local arch
+  # NodeSource dropped armhf packaging for Node 20+; install from a nodejs.org
+  # tarball instead. Raspberry Pi OS 32-bit reports armhf via
+  # `dpkg --print-architecture` for BOTH ARMv6 (Pi Zero/Zero W/1) and ARMv7+
+  # boards, but their Node builds are NOT interchangeable — an ARMv7 binary is
+  # an illegal instruction on an ARMv6 core. Disambiguate on the real CPU.
+  local arch cpu node_ver="v20.18.3"
   arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
-  if [[ "$arch" == "armhf" || "$arch" == "armv7l" ]]; then
-    local node_ver="v20.18.3"
+  cpu=$(uname -m)
+  if [[ "$cpu" == "armv6l" ]]; then
+    # Official Node dropped ARMv6; the community unofficial-builds tarball is
+    # the standard way to run modern Node on a Pi Zero/Zero W/1.
+    curl -fsSL "https://unofficial-builds.nodejs.org/download/release/${node_ver}/node-${node_ver}-linux-armv6l.tar.xz" \
+      -o /tmp/node-arm.tar.xz
+    tar -xJf /tmp/node-arm.tar.xz -C /opt
+    ln -sf "/opt/node-${node_ver}-linux-armv6l/bin/node" /usr/local/bin/node
+    ln -sf "/opt/node-${node_ver}-linux-armv6l/bin/npm" /usr/local/bin/npm
+    rm -f /tmp/node-arm.tar.xz
+  elif [[ "$arch" == "armhf" || "$arch" == "armv7l" ]]; then
     curl -fsSL "https://nodejs.org/dist/${node_ver}/node-${node_ver}-linux-armv7l.tar.xz" \
-      -o /tmp/node-armhf.tar.xz
-    tar -xJf /tmp/node-armhf.tar.xz -C /opt
+      -o /tmp/node-arm.tar.xz
+    tar -xJf /tmp/node-arm.tar.xz -C /opt
     ln -sf "/opt/node-${node_ver}-linux-armv7l/bin/node" /usr/local/bin/node
     ln -sf "/opt/node-${node_ver}-linux-armv7l/bin/npm" /usr/local/bin/npm
-    rm -f /tmp/node-armhf.tar.xz
+    rm -f /tmp/node-arm.tar.xz
   elif [[ -f /etc/debian_version ]]; then
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
